@@ -10,10 +10,10 @@ The main goal is to provide a safe environment for testing without connecting to
 
 - [Features](#features)
 - [Getting Started](#getting-started)
+- [Installation](#installation)
 - [Setup Process](#setup-process)
 - [Configuration](#configuration)
 - [Mining Blocks](#mining-blocks)
-- [Installation](#installation)
 - [Contributing](#contributing)
   
 ## Features
@@ -31,6 +31,49 @@ To get started, you'll need to have [Docker](https://www.docker.com/) installed 
 
 - Docker (v20.10 or higher recommended)
 - Basic knowledge of Bitcoin Core and Docker
+
+## Installation
+
+### Method 1: Download the Image from GitHub Container Registry
+
+You can directly pull the pre-built Docker image and run the setup script without building the image from source. Follow these steps:
+
+1. Pull the image from the GitHub Container Registry:
+
+   ```bash
+   docker pull ghcr.io/dmenec/btc-labnet:1.0
+   ```
+
+2. Clone the repository:
+
+   ```bash
+   git clone https://github.com/Dmenec/BTC-Labnet.git
+   cd BTC-Labnet
+   ```
+3. Run the script to set up Docker containers (commenting out the build step):
+
+  ```bash
+  ./start.sh
+  ```
+
+### Method 2: Build from Source
+
+Follow these steps to build the image from source:
+
+1. Clone the repository:
+
+  ```bash
+  git clone https://github.com/Dmenec/BTC-Labnet.git
+  cd BTC-Labnet
+  ```
+
+2. Run the script to set up Docker containers:
+
+  ```bash
+  ./start.sh
+  ```
+
+After execution, three interconnected Bitcoin nodes (bc-node1, bc-node2, and bc-node3) will be created.
 
 ## Setup Process
 
@@ -84,29 +127,6 @@ cd home/bitcoin/.bitcoin
 ```
 
 For a more efficient mining process, integrate with a Stratum mining pool using the [Bitaxe miner](https://bitaxe.org/).
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/Dmenec/BTC-Labnet.git
-cd BTC-Labnet
-```
-
-Grant execution permissions to the `start.sh` script:
-
-```bash
-chmod +x ./start.sh
-```
-
-Run the script to set up Docker containers:
-
-```bash
-./start.sh
-```
-
-After execution, three interconnected Bitcoin nodes (`bc-node1`, `bc-node2`, and `bc-node3`) will be created.
 
 ## Contributing
 
