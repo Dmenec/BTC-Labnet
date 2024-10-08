@@ -21,7 +21,7 @@ RUN pip3 install essential_generators base58 bech32
 
 RUN git clone -b v${BITCOIN_VERSION} https://github.com/bitcoin/bitcoin.git /opt/bitcoin-${BITCOIN_VERSION}
 
-COPY chainparams.cpp /opt/bitcoin-${BITCOIN_VERSION}/src/chainparams.cpp
+COPY bitcoin-build/chainparams.cpp /opt/bitcoin-${BITCOIN_VERSION}/src/chainparams.cpp
 
 WORKDIR /opt/bitcoin-${BITCOIN_VERSION}
 
@@ -52,9 +52,9 @@ RUN pip3 install essential_generators base58 bech32
 COPY mine/mine.py /home/bitcoin/.bitcoin/mine.py
 COPY mine/server.py /home/bitcoin/.bitcoin/server.py
 COPY mine/start_mining.sh /home/bitcoin/.bitcoin/start_mining.sh
-COPY bitcoin.conf /root/.bitcoin/bitcoin.conf
-COPY bitcoin.conf /home/bitcoin/.bitcoin/bitcoin.conf
-COPY docker-entrypoint.sh /entrypoint.sh
+COPY bitcoin-build/bitcoin.conf /root/.bitcoin/bitcoin.conf
+COPY bitcoin-build/bitcoin.conf /home/bitcoin/.bitcoin/bitcoin.conf
+COPY bitcoin-build/docker-entrypoint.sh /entrypoint.sh
 
 RUN chown -R bitcoin:bitcoin /home/bitcoin/.bitcoin
 
