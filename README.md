@@ -100,7 +100,7 @@ docker network create -d bridge bitcoin_network
 Start your Bitcoin node:
 
 ```bash
-docker run -it -d --network bitcoin_network --name bc-node1 bitcoin -printtoconsole
+docker run -it -d --network bitcoin_network --name bc-node1 -p 8333:8333 -p 8332:8332 bitcoin -printtoconsole -txindex=1 -reindex
 ```
 
 ### Configuring Node Connectivity
