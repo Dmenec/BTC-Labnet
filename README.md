@@ -92,7 +92,7 @@ After execution, three interconnected Bitcoin nodes (bc-node1, bc-node2, and bc-
 Create a Docker bridge network:
 
 ```bash
-docker network create -d bridge bitcoin-network
+docker network create -d bridge bitcoin_network
 ```
 
 ### Running Bitcoin Nodes
@@ -100,7 +100,7 @@ docker network create -d bridge bitcoin-network
 Start your Bitcoin node:
 
 ```bash
-docker run -it -d --network bitcoin-network --name bitcoin-node1 isolated-bitcoin:1.0 -printtoconsole
+docker run -it -d --network bitcoin_network --name bc-node1 bitcoin -printtoconsole
 ```
 
 ### Configuring Node Connectivity
