@@ -41,7 +41,7 @@ You can directly pull the pre-built Docker image and run the setup script withou
 1. Pull the image from the GitHub Container Registry:
 
    ```bash
-   docker pull ghcr.io/dmenec/btc-labnet:1.0
+   docker pull ghcr.io/dmenec/mainnet_testbed:1.0
    ```
 
 2. Clone the repository:
@@ -84,7 +84,7 @@ After execution, three interconnected Bitcoin nodes (bc-node1, bc-node2, and bc-
 3. **Build the Docker Image:** Run the following command:
 
    ```bash
-   docker build -t isolated-bitcoin:1.0 .
+   docker build -t bitcoin .
    ```
 
 ### Setting Up the Docker Network
