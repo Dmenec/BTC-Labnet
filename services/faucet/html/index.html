@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitcoin Labnet Faucet</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+        input {
+            padding: 10px;
+            margin: 10px;
+            font-size: 14px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        p {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Bitcoin Labnet Faucet</h1>
+    <p>Enter your Bitcoin address and an amount of up to 50 BTC.</p>
+    <form id="faucet-form">
+        <input
+            type="text"
+            id="address"
+            name="address"
+            placeholder="Bitcoin Address"
+            pattern="^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$|^bc1[a-zA-HJ-NP-Z0-9]{39,59}$"
+            title="Enter a valid Bitcoin address"
+            required
+        />
+        <input
+            type="number"
+            id="amount"
+            name="amount"
+            placeholder="Amount (BTC)"
+            min="0.0001"
+            max="50"
+            step="0.0001"
+            required
+        />
+        <button type="submit">Request BTC</button>
+    </form>
+
+    <p id="result"></p>
+
+    <script>
+        const API = `${location.protocol}//${location.hostname}:3000`;
+        const result = document.getElementById("result");
+
+        function show(text, color) {
+            result.textContent = text;
+            result.style.color = color;
+        }
+
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        // Polls every 5 s for up to 4 minutes; returns the block height or null
+        async function waitForConfirmation(txId) {
+            for (let i = 0; i < 48; i++) {
+                await sleep(5000);
+                const res = await fetch(`${API}/tx/${txId}`);
+                if (!res.ok) continue;
+                const tx = await res.json();
+                if (tx.confirmations > 0) return tx.blockHeight;
+            }
+            return null;
+        }
+
+        document.getElementById("faucet-form").onsubmit = async (event) => {
+            event.preventDefault();
+
+            const address = document.getElementById("address").value.trim();
+            const amount = parseFloat(document.getElementById("amount").value);
+
+            show("Sending...", "black");
+
+            try {
+                const res = await fetch(`${API}/send_to_address`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ address, amount }),
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    show(`Error: ${data.error}`, "red");
+                    return;
+                }
+
+                show(`Transaction sent. Txid: ${data.txId}. Waiting for confirmation...`, "green");
+
+                const height = await waitForConfirmation(data.txId);
+                if (height) {
+                    show(`The transaction was included in block ${height}.`, "green");
+                } else {
+                    show(`The transaction is not confirmed yet. Txid: ${data.txId}`, "black");
+                }
+            } catch {
+                show("The request failed. Please try again.", "red");
+            }
+        };
+    </script>
+</body>
+</html>

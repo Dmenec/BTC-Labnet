@@ -1,0 +1,37 @@
+Lets the Electrum 4.5.5 client follow the Labnet chain instead of the public mainnet.
+
+- blockchain.py: accept any header without checking difficulty, and do not assert
+  on the delta when saving a header out of order.
+- interface.py: sync from height 0 when the local chain is empty.
+
+--- a/electrum/blockchain.py
++++ b/electrum/blockchain.py
+@@ -456,7 +456,7 @@
+         delta = header.get('block_height') - self.forkpoint
+         data = bfh(serialize_header(header))
+         # headers are only _appended_ to the end:
+-        assert delta == self.size(), (delta, self.size())
++        delta = self.size()  # PATCH: ignore delta mismatch
+         assert len(data) == HEADER_SIZE
+         self.write(data, delta*HEADER_SIZE)
+         self.swap_with_parent()
+@@ -618,6 +618,7 @@
+         return running_total + work_in_last_partial_chunk
+ 
+     def can_connect(self, header: dict, check_height: bool=True) -> bool:
++        return True if header else False
+         if header is None:
+             return False
+         height = header['block_height']
+--- a/electrum/interface.py
++++ b/electrum/interface.py
+@@ -781,6 +781,9 @@
+                 # another interface amended the blockchain
+                 self.logger.info(f"skipping header {height}")
+                 return False
++            if self.blockchain.height() < 0:
++                await self.sync_until(0, height)
++                return True
+             _, height = await self.step(height, header)
+             # in the simple case, height == self.tip+1
+             if height <= self.tip:

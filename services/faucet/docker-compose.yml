@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    ports:
+      - "80:80"
+      - "3000:3000"
+    networks:
+      - bitcoin_network
+    restart: unless-stopped
+
+networks:
+  bitcoin_network:
+    external: true

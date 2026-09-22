@@ -1,0 +1,22 @@
+#!/bin/sh
+if [ ! -e "${SSL_CERTFILE}" ] || [ ! -e "${SSL_KEYFILE}" ]; then
+  openssl req -newkey rsa:2048 -sha256 -nodes -x509 -days 365 -subj "/O=ElectrumX" -keyout "${SSL_KEYFILE}" -out "${SSL_CERTFILE}"
+fi
+
+# Point the Electrum client at the local ElectrumX only
+electrum setconfig server "127.0.0.1:50001:t" 2>/dev/null
+electrum setconfig auto_connect false 2>/dev/null
+electrum setconfig oneserver true 2>/dev/null
+electrum setconfig log_to_file true 2>/dev/null
+
+# Start the Electrum daemon only when it is not already running
+(sleep 15; while true; do
+  if ! electrum getinfo > /dev/null 2>&1; then
+    rm -f /data/.electrum/daemon
+    electrum daemon -d 2>/dev/null
+  fi
+  sleep 60
+done) &
+
+# ElectrumX runs in the foreground
+exec electrumx_server
