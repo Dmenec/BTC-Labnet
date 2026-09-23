@@ -1,0 +1,97 @@
+# Labnet services
+
+Optional services that run next to the Labnet node. None of them is needed for the node itself.
+
+All of them join the node's Docker network `bitcoin_network` (`172.18.0.0/16`) with fixed IPs, because they reference each other and the node by IP:
+
+| Service | Container | IP | Host ports | Directory |
+|---|---|---|---|---|
+| Bitcoin Knots v29.2 | `knots-v29.2` | 172.18.0.2 | 9332 (RPC) | [knots/](knots/) |
+| ElectrumX + Electrum daemon | `electrum_server_container` | 172.18.0.5 | 50001, 50002, 7777 | [electrum/](electrum/) |
+| mempool DB / API / web | `mempool-db-1`, `mempool-api-1`, `mempool-web-1` | .4 / .7 / .6 | 8888 (web) | [mempool/](mempool/) |
+| mainnet-observer | `mainnet-observer-frontend` | default bridge | 8889 | [observer/](observer/) |
+| Faucet | `faucet` | default bridge | 80, 3000 | [faucet/](faucet/) |
+
+Containers without a fixed IP, like the faucet, get one from `172.18.128.0/17`, so they never take these addresses. The node is `172.18.0.3`. If a service runs on a different host than the node, replace that IP with the node host's address and add the service host to `RPC_ALLOW_IPS` in the node's `.env`.
+
+Commands below are run from this directory.
+
+## Knots ([knots/](knots/))
+
+Bitcoin Knots `v29.2.knots20251110` with the same consensus patches as the node (see the main [README](../README.md#consensus-patches)), except for the IBD change: Knots does not serve block templates. Diffs against the upstream tag are in [knots/patches/](knots/patches/).
+
+It uses the same RPC credentials as the node, from the root `.env`:
+
+```bash
+set -a; . ../.env; set +a
+docker build -t knots-v29.2 knots
+docker run -d --name knots-v29.2 --network bitcoin_network --ip 172.18.0.2 --restart unless-stopped \
+  -v knots_data:/home/bitcoin/.bitcoin -p 9332:8332 knots-v29.2 \
+  -printtoconsole -txindex=1 -dnsseed=0 -fixedseeds=0 -addnode=core-v30.0-v1:8333 \
+  -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASSWORD"
+```
+
+## Electrum ([electrum/](electrum/))
+
+One image runs both **ElectrumX 1.16.0** (indexer) and the **Electrum 4.5.5** client as an RPC daemon on port 7777, so wallets can be created, signed and broadcast on the private chain. The two live in separate virtualenvs because their `aiorpcX` requirements conflict.
+
+The Electrum client is patched at build time to accept a chain that is not the public mainnet. The first change is made in the Dockerfile, the rest are in [electrum/electrum.patch](electrum/electrum.patch):
+
+1. `checkpoints.json` emptied. Otherwise it disconnects with `server tip below max checkpoint`.
+2. `blockchain.py` `can_connect()` always accepts a header, because it validates difficulty against mainnet retargeting.
+3. `blockchain.py` `save_header()` no longer asserts `delta == self.size()`.
+4. `interface.py` `_process_header_at_tip()` syncs from height 0 when the local chain is empty.
+
+[electrum/bin/init](electrum/bin/init) generates the SSL certificate, configures the client to use only the local ElectrumX, and supervises the Electrum daemon (it restarts it only if `electrum getinfo` fails).
+
+Copy [electrum/.env.example](electrum/.env.example) to `electrum/.env` and set the node credentials in `DAEMON_URL`. The cost limits in it are disabled on purpose (see the comments).
+
+```bash
+docker build -t electrum_server electrum
+docker run -d --name electrum_server_container --network bitcoin_network --ip 172.18.0.5 --restart unless-stopped \
+  -v electrumx_data:/data -p 50001:50001 -p 50002:50002 -p 7777:7777 \
+  --env-file electrum/.env electrum_server
+```
+
+- The `electrumx_data` volume holds the wallets in `/data/.electrum/wallets/`. Do not delete it. The ElectrumX index (`/data/{hist,utxo,meta}`) can be deleted to force a reindex.
+- If `electrum getinfo` shows the public mainnet height or `connected: false`, stop the daemon, delete `/data/.electrum/blockchain_headers` and `/data/.electrum/forks`, and start it again.
+
+## mempool ([mempool/](mempool/))
+
+The official `mempool/frontend` and `mempool/backend` images, configured to use ElectrumX as backend and the main node for RPC. Copy [mempool/.env.example](mempool/.env.example) to `mempool/.env` and set the passwords, then:
+
+```bash
+cd mempool && docker compose up -d
+```
+
+The images are pinned to the versions running in production. The database and the cache live in the Docker volumes `mempool_mempool_db` and `mempool_mempool_cache`. With empty volumes mempool indexes the blocks again from the node, but the history of the mempool statistics charts is lost.
+
+A `401` in `docker logs mempool-api-1` means wrong RPC credentials or node IP. `ECONNREFUSED ...:50001` means ElectrumX is down or its IP is wrong.
+
+## mainnet-observer ([observer/](observer/))
+
+Charts from [0xB10C/mainnet-observer](https://github.com/0xB10C/mainnet-observer). This directory only holds the files added to that repository:
+
+1. Clone it into `~/observer/mainnet-observer`, then copy `backend.Dockerfile` to `backend/Dockerfile` and `frontend.Dockerfile` to `frontend/Dockerfile`.
+2. Build the backend: `docker build -t mainnet-observer-backend ~/observer/mainnet-observer/backend`.
+3. Run [observer/refresh.sh](observer/refresh.sh) whenever the charts need updating. It reads the node's REST API (`rest=1`), regenerates the CSVs and rebuilds the frontend on port 8889.
+
+`--start-height 1` excludes the genesis block, which dates from 2009.
+
+## Faucet ([faucet/](faucet/))
+
+Web page (nginx, port 80) plus an Express API (port 3000) that sends coins from a wallet on the node with `sendtoaddress`.
+
+Copy [faucet/.env.example](faucet/.env.example) to `faucet/.env` and fill it in (RPC credentials, wallet, payouts per IP and hour), then:
+
+```bash
+cd faucet && docker compose up -d --build
+```
+
+The container joins `bitcoin_network` and reaches the node at `172.18.0.3`. The page calls the API on port 3000 of the host it was loaded from.
+
+API:
+- `POST /send_to_address` with `{"address": "...", "amount": 1.5}` (at most 50 BTC). Returns `{"txId": "..."}`.
+- `GET /tx/<txid>` returns `{"confirmations": n, "blockHeight": h}`. The page polls it every 5 s for up to 4 minutes.
+
+Every payout puts a transaction in the mempool. If the miner is powered on when the mempool is not empty, or other tools spend from the same wallet, a payout can interfere with them: use a dedicated wallet, or stop the faucet while running experiments.

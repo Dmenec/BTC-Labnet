@@ -1,134 +1,71 @@
-# BTC Labnet: Creating a Parallel Bitcoin Mainnet for Controlled Testing
+# BTC Labnet: a private Bitcoin mainnet for controlled testing
 
-## Introduction
+BTC Labnet is a private Bitcoin network developed by the Blockchain and Cryptocurrency Research Group at the Universitat Autònoma de Barcelona. Its node is a patched Bitcoin Core v30.0 that keeps the **mainnet** parameters (genesis block, address formats, ports), so real wallets and tools can be used against a chain nobody else is mining.
 
-BTC Labnet is a project developed by the Blockchain and Cryptocurrency Research Group at the Autonomous University of Barcelona. This project allows for controlled testing of the Bitcoin network by creating a parallel mainnet using Docker containers. 
+This repository contains the node. Optional services that run next to it (Knots, Electrum, mempool, mainnet-observer, faucet) are in [services/](services/).
 
-The main goal is to provide a safe environment for testing without connecting to the real Bitcoin network.
+## Consensus patches
 
-## Table of Contents
+The node is Bitcoin Core **v30.0** with two source files patched at build time: [core/Dockerfile](core/Dockerfile) clones the upstream tag and applies the diffs in [core/patches/](core/patches/).
 
-- [Features](#features)
-- [Getting Started](#getting-started)
-- [Installation](#installation)
-- [Setup Process](#setup-process)
-- [Configuration](#configuration)
-- [Mining Blocks](#mining-blocks)
-- [Contributing](#contributing)
-  
-## Features
+**`src/kernel/chainparams.cpp`** (mainnet section):
 
-- Run multiple Bitcoin nodes in an isolated Docker network.
-- Custom consensus rules, including SegWit and Taproot support from block 0.
-- Easy setup and management using shell scripts.
-- Integration with a Stratum mining pool for efficient mining.
+| Parameter | Upstream | Labnet | Why |
+|---|---|---|---|
+| `SegwitHeight` | 481824 | 0 | SegWit active from the genesis block |
+| Taproot `min_activation_height` | 709632 | 0 | Taproot active from the genesis block |
+| `fPowNoRetargeting` | false | true | No automatic retargeting: the chain has a single small miner |
+| `nMinimumChainWork` | mainnet value | 0 | The private chain has very little work |
+| `defaultAssumeValid` | mainnet block | none | No mainnet block exists on this chain |
 
-## Getting Started
+`powLimit` stays at the **mainnet** value. Together with `fPowNoRetargeting`, this keeps the difficulty from ever going below 1. Do not replace it with the regtest `powLimit` (`7fff…`): that allows blocks with difficulty below 1, which nodes built from this repository reject (`high-hash`), and the network splits.
 
-To get started, you'll need to have [Docker](https://www.docker.com/) installed on your machine. 
+**`src/validation.cpp`**:
 
-### Prerequisites
+- `IsInitialBlockDownload()` no longer returns `true` when the tip is older than `max_tip_age`. Without this, the node stays in IBD whenever nobody has mined for a while, `getblocktemplate` fails, and the pool cannot give work to the miner.
+- `ContextualCheckBlockHeader()` skips the `bad-diffbits` check when `fPowNoRetargeting` is set. Upstream then requires every block to repeat the previous block's `nBits`; with the patch, any `nBits` within `powLimit` is accepted.
 
-- Docker (v20.10 or higher recommended)
-- Basic knowledge of Bitcoin Core and Docker
+[services/knots/](services/knots/) applies the same patches to Bitcoin Knots `v29.2.knots20251110`, except for the IBD change (Knots does not serve block templates).
 
-## Installation
+## Running a node
 
-### Method 1: Download the Image from GitHub Container Registry
+Requirements: Docker 20.10 or later.
 
-You can directly pull the pre-built Docker image and run the setup script without building the image from source. Follow these steps:
-
-1. Pull the image from the GitHub Container Registry:
+1. Copy [.env.example](.env.example) to `.env` and fill it in: RPC credentials, an optional `rpcauth` line for extra users (mempool), the peer to sync from, and the hosts outside the Docker network that may use RPC (mining pool, wallet clients, services on another machine).
+2. Build the image and start the node:
 
    ```bash
-   docker pull ghcr.io/dmenec/mainnet_testbed:1.0
+   ./start.sh
    ```
 
-2. Clone the repository:
+   With `LABNET_PEER` set, the node joins that Labnet and syncs its chain. Without it, the node starts a new chain from the genesis block.
+3. Check it:
 
    ```bash
-   git clone https://github.com/Dmenec/BTC-Labnet.git
-   cd BTC-Labnet
-   ```
-3. Run the script to set up Docker containers (commenting out the build step):
-
-  ```bash
-  ./start.sh
-  ```
-
-### Method 2: Build from Source
-
-Follow these steps to build the image from source:
-
-1. Clone the repository:
-
-  ```bash
-  git clone https://github.com/Dmenec/BTC-Labnet.git
-  cd BTC-Labnet
-  ```
-
-2. Run the script to set up Docker containers:
-
-  ```bash
-  ./start.sh
-  ```
-
-After execution, three interconnected Bitcoin nodes (bc-node1, bc-node2, and bc-node3) will be created.
-
-## Setup Process
-
-### Building a Customized Docker Image for Bitcoin-Core
-
-1. **Modify Bitcoin-Core:** Adjust the Bitcoin-Core code to enable SegWit and Taproot.
-2. **Create a Dockerfile:** Use your own `Dockerfile` to build your custom Bitcoin-Core image.
-3. **Build the Docker Image:** Run the following command:
-
-   ```bash
-   docker build -t bitcoin .
+   docker exec core-v30.0-v1 bitcoin-cli -rpcuser=<user> -rpcpassword='<password>' getblockchaininfo
    ```
 
-### Setting Up the Docker Network
+Use single quotes around the password if it contains `!`, otherwise bash expands it.
 
-Create a Docker bridge network:
+The node gets the fixed IP `172.18.0.3` on the Docker network `bitcoin_network` (`172.18.0.0/16`), which the services expect.
 
-```bash
-docker network create -d bridge bitcoin_network
-```
+## Mining
 
-### Running Bitcoin Nodes
-
-Start your Bitcoin node:
+The node is mined through [public-pool](https://github.com/benjamin-wilson/public-pool), which fetches block templates over RPC, and a [Bitaxe](https://bitaxe.org/) connected to the pool over Stratum. Bitcoin Core 30 rejects the numeric `jsonrpc` field sent by public-pool's RPC library, so its Dockerfile needs this after `npm i`:
 
 ```bash
-docker run -it -d --network bitcoin_network --name bc-node1 -p 8333:8333 -p 8332:8332 bitcoin -printtoconsole -txindex=1 -reindex
+sed -i 's/jsonrpc: 1.0/jsonrpc: "1.0"/' node_modules/rpc-bitcoin/build/src/rpc.js
 ```
 
-### Configuring Node Connectivity
+At difficulty 1, `generatetoaddress` and CPU miners do not find blocks in practice.
 
-Ensure all nodes can connect properly by updating the `bitcoin.conf` file of each node with the IP address of the router node.
+## Operational notes
 
-## Configuration
-
-The `bitcoin.conf` file is crucial for customizing your node properties. Key settings include:
-
-- `addnode=<IP_ADDRESS>`: Add the router node's IP.
-- `rpcbind=0.0.0.0`: Listen on all available network interfaces.
-- `rpcport=8332`: Default RPC port.
-- `rpcuser=<username>` and `rpcpassword=<password>`: Set up RPC authentication.
-- `server=1`: Enable RPC commands.
-
-## Mining Blocks
-
-To mine blocks, you can use this command inside one of the nodes. 
-
-```bash
-cd home/bitcoin/.bitcoin
-./start_mining.sh
-```
-
-For a more efficient mining process, integrate with a Stratum mining pool using the [Bitaxe miner](https://bitaxe.org/).
+- Always recreate the container with its fixed `--ip`. The services reference the node by IP.
+- The `bitcoin.conf` baked into the image is only copied to the data volume the first time. After that, edit the copy inside the volume.
+- Changes made with `docker exec` are lost when the container is recreated. Permanent changes go into [core/](core/).
+- A `peers.dat` restored from a backup can make an "isolated" node connect to the real Bitcoin network. Use `-connect=` and delete `peers.dat` and `anchors.dat`.
 
 ## Contributing
 
-Contributions are more than welcome! :) 
-Please open an issue or submit a pull request for any enhancements or bug fixes.
+Contributions are welcome. Please open an issue or a pull request.

@@ -10,7 +10,7 @@ RUN pip install --upgrade pip setuptools
 # ElectrumX and the Electrum client need different aiorpcX versions,
 # so each one gets its own virtualenv.
 
-# ElectrumX server (1.16.0: master needs an aiorpcX that is not on PyPI)
+# ElectrumX server, pinned to 1.16.0 because master needs an aiorpcX that is not on PyPI
 RUN python -m venv /opt/electrumx-venv \
  && /opt/electrumx-venv/bin/pip install uvloop "aiorpcX[ws]>=0.23.0,<0.24" \
  && git clone --branch 1.16.0 --depth 1 https://github.com/spesmilo/electrumx.git /opt/electrumx \
@@ -23,7 +23,8 @@ RUN python -m venv /opt/electrum-venv \
  && /opt/electrum-venv/bin/pip install https://download.electrum.org/4.5.5/Electrum-4.5.5.tar.gz \
  && ln -s /opt/electrum-venv/bin/electrum /usr/local/bin/electrum
 
-# Make the client accept the Labnet chain: no mainnet checkpoints, plus electrum.patch
+# Make the client accept the Labnet chain by dropping the mainnet checkpoints
+# and applying electrum.patch
 ARG SITE=/opt/electrum-venv/lib/python3.8/site-packages
 COPY electrum.patch /tmp/
 RUN echo "[]" > $SITE/electrum/checkpoints.json \

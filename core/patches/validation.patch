@@ -1,6 +1,13 @@
+Labnet changes to validation.cpp for Bitcoin Core v30.0.
+
+IsInitialBlockDownload() no longer checks max_tip_age, so the node leaves IBD
+even when the last block is old and keeps serving block templates to the pool.
+ContextualCheckBlockHeader() skips the bad-diffbits check when
+fPowNoRetargeting is set.
+
 --- a/src/validation.cpp
 +++ b/src/validation.cpp
-@@ -2014,10 +2014,6 @@
+@@ -2014,10 +2014,9 @@
      if (chain.Tip()->nChainWork < MinimumChainWork()) {
          return true;
      }
@@ -8,14 +15,18 @@
 -        return true;
 -    }
 -    LogInfo("Leaving InitialBlockDownload (latching to false)");
++    // The Labnet skips the max_tip_age check. Blocks can be hours apart, and a node
++    // restarted with an old tip would stay in IBD, so getblocktemplate would fail and
++    // the miner would get no work.
      m_cached_finished_ibd.store(true, std::memory_order_relaxed);
      return false;
  }
-@@ -4185,7 +4181,7 @@
+@@ -4185,7 +4184,8 @@
  
      // Check proof of work
      const Consensus::Params& consensusParams = chainman.GetConsensus();
 -    if (block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))
++    // Without retargeting the Labnet accepts any nBits within powLimit
 +    if (!consensusParams.fPowNoRetargeting && block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))
          return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, "bad-diffbits", "incorrect proof of work");
  

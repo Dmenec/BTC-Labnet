@@ -1,8 +1,8 @@
 Lets the Electrum 4.5.5 client follow the Labnet chain instead of the public mainnet.
 
-- blockchain.py: accept any header without checking difficulty, and do not assert
-  on the delta when saving a header out of order.
-- interface.py: sync from height 0 when the local chain is empty.
+In blockchain.py the client accepts any header without checking its difficulty,
+and no longer asserts on the delta when a header is saved out of order.
+In interface.py it syncs from height 0 when the local chain is empty.
 
 --- a/electrum/blockchain.py
 +++ b/electrum/blockchain.py

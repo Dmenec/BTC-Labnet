@@ -1,0 +1,8 @@
+# Node, wallet and service data must never be committed
+wallet.dat
+*.legacy.bak
+peers.dat
+anchors.dat
+.env
+services/faucet/node/node_modules/
+labnet-export*

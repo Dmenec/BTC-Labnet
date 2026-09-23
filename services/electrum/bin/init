@@ -3,17 +3,27 @@ if [ ! -e "${SSL_CERTFILE}" ] || [ ! -e "${SSL_KEYFILE}" ]; then
   openssl req -newkey rsa:2048 -sha256 -nodes -x509 -days 365 -subj "/O=ElectrumX" -keyout "${SSL_KEYFILE}" -out "${SSL_CERTFILE}"
 fi
 
-# Point the Electrum client at the local ElectrumX only
-electrum setconfig server "127.0.0.1:50001:t" 2>/dev/null
-electrum setconfig auto_connect false 2>/dev/null
-electrum setconfig oneserver true 2>/dev/null
-electrum setconfig log_to_file true 2>/dev/null
+# The daemon cannot be running yet, so any lockfile is left over from the last run
+rm -f /data/.electrum/daemon
+
+# Point the Electrum client at the local ElectrumX only, and serve its RPC on port 7777.
+# --offline writes the config file directly, since the daemon is not running yet.
+electrum --offline setconfig server "127.0.0.1:50001:t"
+electrum --offline setconfig auto_connect false
+electrum --offline setconfig oneserver true
+electrum --offline setconfig log_to_file true
+electrum --offline setconfig rpchost 0.0.0.0
+electrum --offline setconfig rpcport 7777
+if [ -n "$ELECTRUM_RPC_PASSWORD" ]; then
+  electrum --offline setconfig rpcuser "${ELECTRUM_RPC_USER:-user}"
+  electrum --offline setconfig rpcpassword "$ELECTRUM_RPC_PASSWORD"
+fi
 
 # Start the Electrum daemon only when it is not already running
 (sleep 15; while true; do
   if ! electrum getinfo > /dev/null 2>&1; then
     rm -f /data/.electrum/daemon
-    electrum daemon -d 2>/dev/null
+    electrum daemon -d
   fi
   sleep 60
 done) &

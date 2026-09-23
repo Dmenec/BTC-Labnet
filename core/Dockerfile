@@ -1,4 +1,4 @@
-# ---------- BUILDER ----------
+# Build Bitcoin Core from the upstream tag with the Labnet patches
 FROM ubuntu:22.04 AS builder
 
 ARG UID=101
@@ -21,11 +21,13 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
  && update-ca-certificates \
  && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+# GitHub clones sometimes fail halfway, so keep retrying
 RUN until git clone --branch v${BITCOIN_VERSION} --depth 1 \
           https://github.com/bitcoin/bitcoin.git /opt/bitcoin-${BITCOIN_VERSION}; do \
         echo "Retrying clone..."; sleep 5; \
     done
 
+# Labnet consensus changes, explained at the top of each patch
 COPY patches/ /tmp/patches/
 RUN cd /opt/bitcoin-${BITCOIN_VERSION} && git apply /tmp/patches/*.patch
 
@@ -38,6 +40,7 @@ RUN cmake -S . -B build -G Ninja \
   && cmake --build build -- -j"$(nproc --all)" \
   && cmake --install build
 
+# Runtime image
 FROM ubuntu:22.04
 
 ARG UID=101
@@ -53,9 +56,13 @@ RUN apt-get update -y && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+# The sources come along with the binaries, so you can always check what a
+# running node was built from
 COPY --from=builder /opt/bitcoin-${BITCOIN_VERSION}/ /opt/bitcoin-${BITCOIN_VERSION}/
 ENV PATH=/opt/bitcoin-${BITCOIN_VERSION}/build/bin/:$PATH
 
+# Docker only copies this config into the data volume the first time the volume
+# is used. After that, edit the copy inside the volume.
 COPY bitcoin-build/bitcoin.conf /root/.bitcoin/bitcoin.conf
 COPY bitcoin-build/bitcoin.conf /home/bitcoin/.bitcoin/bitcoin.conf
 COPY bitcoin-build/docker-entrypoint.sh /entrypoint.sh

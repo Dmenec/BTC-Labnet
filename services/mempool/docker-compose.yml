@@ -1,0 +1,65 @@
+# Images pinned to the versions running in production (pulled 2026-04-21)
+services:
+  web:
+    environment:
+      FRONTEND_HTTP_PORT: "8080"
+      BACKEND_MAINNET_HTTP_HOST: "api"
+    image: mempool/frontend@sha256:0a162e7e0d26a01e9686ddf69c96c4beae5fe10b0daa1020f3d392e033c058f1
+    restart: unless-stopped
+    stop_grace_period: 1m
+    command: "./wait-for db:3306 --timeout=720 -- nginx -g 'daemon off;'"
+    ports:
+      - 8888:8080
+    networks:
+      bitcoin_network:
+        ipv4_address: 172.18.0.6
+  api:
+    environment:
+      MEMPOOL_BACKEND: "electrum"
+      ELECTRUM_HOST: "172.18.0.5"
+      ELECTRUM_PORT: "50001"
+      ELECTRUM_TLS_ENABLED: "false"
+      CORE_RPC_HOST: "${CORE_RPC_HOST:-172.18.0.3}"
+      CORE_RPC_PORT: "8332"
+      CORE_RPC_USERNAME: "mempool"
+      CORE_RPC_PASSWORD: "${CORE_RPC_PASSWORD}"
+      CORE_RPC_TIMEOUT: "60000"
+      MEMPOOL_NETWORK: "mainnet"
+      DATABASE_ENABLED: "true"
+      DATABASE_HOST: "db"
+      DATABASE_DATABASE: "mempool"
+      DATABASE_USERNAME: "mempool"
+      DATABASE_PASSWORD: "${DB_PASSWORD}"
+      STATISTICS_ENABLED: "true"
+    image: mempool/backend@sha256:358c0a517c8dcf26e7f5c02447de5bab33ec7e3fa6318685cf8012ce36098e3a
+    restart: unless-stopped
+    stop_grace_period: 1m
+    command: "./wait-for-it.sh db:3306 --timeout=720 --strict -- ./start.sh"
+    volumes:
+      - mempool_cache:/backend/cache
+    networks:
+      bitcoin_network:
+        ipv4_address: 172.18.0.7
+  db:
+    environment:
+      MYSQL_DATABASE: "mempool"
+      MYSQL_USER: "mempool"
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+      MARIADB_AUTO_UPGRADE: "1"
+    image: mariadb:10.5.21
+    restart: unless-stopped
+    stop_grace_period: 1m
+    volumes:
+      - mempool_db:/var/lib/mysql
+    networks:
+      bitcoin_network:
+        ipv4_address: 172.18.0.4
+
+volumes:
+  mempool_cache:
+  mempool_db:
+
+networks:
+  bitcoin_network:
+    external: true
