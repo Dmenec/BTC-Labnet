@@ -1,28 +1,28 @@
 Lets the Electrum 4.5.5 client follow the Labnet chain instead of the public mainnet.
 
-In blockchain.py the client accepts any header without checking its difficulty,
-and no longer asserts on the delta when a header is saved out of order.
-In interface.py it syncs from height 0 when the local chain is empty.
+In blockchain.py a header is checked against its own nBits, because the Labnet
+never retargets and Electrum would otherwise expect the mainnet schedule. The
+header must still be the next height and link to the previous block.
+In interface.py the client syncs from height 0 when the local chain is empty.
 
 --- a/electrum/blockchain.py
 +++ b/electrum/blockchain.py
-@@ -456,7 +456,7 @@
-         delta = header.get('block_height') - self.forkpoint
-         data = bfh(serialize_header(header))
-         # headers are only _appended_ to the end:
--        assert delta == self.size(), (delta, self.size())
-+        delta = self.size()  # PATCH: ignore delta mismatch
-         assert len(data) == HEADER_SIZE
-         self.write(data, delta*HEADER_SIZE)
-         self.swap_with_parent()
-@@ -618,6 +618,7 @@
-         return running_total + work_in_last_partial_chunk
- 
-     def can_connect(self, header: dict, check_height: bool=True) -> bool:
-+        return True if header else False
-         if header is None:
-             return False
-         height = header['block_height']
+@@ -305,9 +305,12 @@
+             raise InvalidHeader("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
+         if constants.net.TESTNET:
+             return
+-        bits = cls.target_to_bits(target)
+-        if bits != header.get('bits'):
+-            raise InvalidHeader("bits mismatch: %s vs %s" % (bits, header.get('bits')))
++        # The Labnet never retargets and its nodes accept any nBits within the
++        # proof-of-work limit, so the header is checked against its own nBits
++        # and not against the mainnet retarget schedule.
++        target = cls.bits_to_target(header.get('bits'))
++        if not 0 < target <= MAX_TARGET:
++            raise InvalidHeader("bits out of range: %s" % header.get('bits'))
+         _pow_hash = pow_hash_header(header)
+         pow_hash_as_num = int.from_bytes(bfh(_pow_hash), byteorder='big')
+         if pow_hash_as_num > target:
 --- a/electrum/interface.py
 +++ b/electrum/interface.py
 @@ -781,6 +781,9 @@

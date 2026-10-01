@@ -38,9 +38,10 @@ One image runs both **ElectrumX 1.16.0** (indexer) and the **Electrum 4.5.5** cl
 The Electrum client is patched at build time to accept a chain that is not the public mainnet. The first change is made in the Dockerfile, the rest are in [electrum/electrum.patch](electrum/electrum.patch):
 
 1. `checkpoints.json` emptied. Otherwise it disconnects with `server tip below max checkpoint`.
-2. `blockchain.py` `can_connect()` always accepts a header, because it validates difficulty against mainnet retargeting.
-3. `blockchain.py` `save_header()` no longer asserts `delta == self.size()`.
-4. `interface.py` `_process_header_at_tip()` syncs from height 0 when the local chain is empty.
+2. `blockchain.py` `verify_header()` checks the proof of work against the header's own `nBits`. Electrum expects the mainnet retarget schedule, and the Labnet never retargets.
+3. `interface.py` `_process_header_at_tip()` syncs from height 0 when the local chain is empty.
+
+A header must still be the next height and link to the previous block. An earlier version of the patch accepted any header and appended it to the end of the headers file. When two blocks arrived within the same second the client stored the second one in the first one's place, then failed every merkle proof for that block and reconnected in a loop, so its wallets stopped seeing confirmations. A client that ran with that version needs its `blockchain_headers` file rebuilt from the node.
 
 [electrum/bin/init](electrum/bin/init) generates the SSL certificate, configures the client to use only the local ElectrumX, and supervises the Electrum daemon (it restarts it only if `electrum getinfo` fails).
 
