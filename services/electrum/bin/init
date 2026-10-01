@@ -15,8 +15,9 @@ electrum --offline setconfig log_to_file true
 electrum --offline setconfig rpchost 0.0.0.0
 electrum --offline setconfig rpcport 7777
 if [ -n "$ELECTRUM_RPC_PASSWORD" ]; then
-  electrum --offline setconfig rpcuser "${ELECTRUM_RPC_USER:-user}"
-  electrum --offline setconfig rpcpassword "$ELECTRUM_RPC_PASSWORD"
+  # The -- keeps a value that starts with a dash from being read as an option
+  electrum --offline setconfig -- rpcuser "${ELECTRUM_RPC_USER:-user}"
+  electrum --offline setconfig -- rpcpassword "$ELECTRUM_RPC_PASSWORD"
 fi
 
 # Start the Electrum daemon only when it is not already running
