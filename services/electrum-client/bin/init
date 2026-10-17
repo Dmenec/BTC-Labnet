@@ -1,0 +1,20 @@
+#!/bin/sh
+# The daemon cannot be running yet, so any lockfile is left over from the last run
+rm -f /data/.electrum/daemon
+
+# Point the client at the Labnet's ElectrumX only, and serve its RPC on port 7777.
+# --offline writes the config file directly, since the daemon is not running yet.
+electrum --offline setconfig server "${ELECTRUMX_SERVER:-172.18.0.5:50001:t}"
+electrum --offline setconfig auto_connect false
+electrum --offline setconfig oneserver true
+electrum --offline setconfig log_to_file true
+electrum --offline setconfig rpchost 0.0.0.0
+electrum --offline setconfig rpcport 7777
+if [ -n "$ELECTRUM_RPC_PASSWORD" ]; then
+  # The -- keeps a value that starts with a dash from being read as an option
+  electrum --offline setconfig -- rpcuser "${ELECTRUM_RPC_USER:-user}"
+  electrum --offline setconfig -- rpcpassword "$ELECTRUM_RPC_PASSWORD"
+fi
+
+# The daemon runs in the foreground, so Docker restarts it if it dies
+exec electrum daemon

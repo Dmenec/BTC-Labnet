@@ -9,6 +9,7 @@ All of them join the node's Docker network `bitcoin_network` (`172.18.0.0/16`) w
 | Bitcoin Knots v29.4 | `knots-v29.4` | 172.18.0.8 | 9342 (RPC) | [knots/](knots/) |
 | Bitcoin Knots v29.2 (previous version, kept) | `knots-v29.2` | 172.18.0.2 | 9332 (RPC) | [knots/](knots/) |
 | ElectrumX + Electrum daemon | `electrum_server_container` | 172.18.0.5 | 50001, 50002, 7777 | [electrum/](electrum/) |
+| Electrum 4.8.2 client (daemon only) | `electrum-client-4.8.2` | 172.18.0.9 | 7778 (RPC) | [electrum-client/](electrum-client/) |
 | mempool DB / API / web | `mempool-db-1`, `mempool-api-1`, `mempool-web-1` | .4 / .7 / .6 | 8888 (web) | [mempool/](mempool/) |
 | mainnet-observer | `mainnet-observer-frontend` | default bridge | 8889 | [observer/](observer/) |
 | Faucet | `faucet` | default bridge | 80, 3000 | [faucet/](faucet/) |
@@ -66,6 +67,21 @@ docker run -d --name electrum_server_container --network bitcoin_network --ip 17
 
 - The `electrumx_data` volume holds the wallets in `/data/.electrum/wallets/`. Do not delete it. The ElectrumX index (`/data/{hist,utxo,meta}`) can be deleted to force a reindex.
 - If `electrum getinfo` shows the public mainnet height or `connected: false`, stop the daemon, delete `/data/.electrum/blockchain_headers` and `/data/.electrum/forks`, and start it again.
+
+## Electrum client ([electrum-client/](electrum-client/))
+
+The **Electrum 4.8.2** client alone, as an RPC daemon, connected to the ElectrumX above. Client updates go in an image of their own, so ElectrumX, which other services use, is not rebuilt, and the 4.5.5 client inside `electrum_server_container` stays as the previous version. Each client has its own data volume: a newer client upgrades a wallet file when it opens it, and the older one can no longer read it.
+
+The changes are the same as for 4.5.5, on the 4.8.2 code: `electrum/chains/mainnet/checkpoints.json` emptied (it moved in 4.6) and [electrum-client/electrum.patch](electrum-client/electrum.patch). The Dockerfile checks the SHA-256 of the release tarball.
+
+It takes the same RPC credentials as the client in `electrum/.env` (`ELECTRUM_RPC_USER`, `ELECTRUM_RPC_PASSWORD`):
+
+```bash
+docker build -t electrum-client-4.8.2 electrum-client
+docker run -d --name electrum-client-4.8.2 --network bitcoin_network --ip 172.18.0.9 --restart unless-stopped \
+  -v electrum_client_4_8_2_data:/data -p 7778:7777 \
+  -e ELECTRUM_RPC_USER -e ELECTRUM_RPC_PASSWORD electrum-client-4.8.2
+```
 
 ## mempool ([mempool/](mempool/))
 

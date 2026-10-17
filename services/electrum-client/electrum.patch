@@ -1,0 +1,39 @@
+Lets the Electrum 4.8.2 client follow the Labnet chain instead of the public mainnet.
+The same two changes as in ../electrum/electrum.patch for 4.5.5, on the 4.8.2 code.
+
+In blockchain.py a header is checked against its own nBits, because the Labnet
+never retargets and Electrum would otherwise expect the mainnet schedule. The
+header must still be the next height and link to the previous block.
+In interface.py the client syncs from height 0 when the local chain is empty
+(4.8 rewrote this function, so the hunk is new).
+
+--- a/electrum/blockchain.py
++++ b/electrum/blockchain.py
+@@ -373,9 +373,12 @@
+             raise InvalidHeader("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
+         if constants.net.TESTNET:
+             return
+-        bits = cls.target_to_bits(target)
+-        if bits != header.get('bits'):
+-            raise InvalidHeader("bits mismatch: %s vs %s" % (bits, header.get('bits')))
++        # The Labnet never retargets and its nodes accept any nBits within the
++        # proof-of-work limit, so the header is checked against its own nBits
++        # and not against the mainnet retarget schedule.
++        target = cls.bits_to_target(header.get('bits'))
++        if not 0 < target <= MAX_TARGET:
++            raise InvalidHeader("bits out of range: %s" % header.get('bits'))
+         _pow_hash = pow_hash_header(header)
+         pow_hash_as_num = int.from_bytes(bfh(_pow_hash), byteorder='big')
+         if pow_hash_as_num > target:
+--- a/electrum/interface.py
++++ b/electrum/interface.py
+@@ -1188,6 +1188,9 @@
+             if self.blockchain.height() >= height and self.blockchain.check_header(header):
+                 # another interface amended the blockchain
+                 return False
++            if self.blockchain.height() < 0:
++                await self.sync_until(0, next_height=height)
++                return True
+             await self.sync_until(height)
+             return True
+ 
