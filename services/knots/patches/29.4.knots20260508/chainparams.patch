@@ -1,0 +1,48 @@
+Labnet consensus parameters for Bitcoin Knots v29.4.knots20260508, in the
+mainnet section. They are the same as for the Bitcoin Core node in core/patches/.
+
+SegWit and Taproot are active from the genesis block. The chain has a single
+small miner, so the difficulty is never retargeted, and there is no minimum
+chain work or assumed-valid block. powLimit stays at the mainnet value, so the
+difficulty never drops below 1.
+
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -102,14 +102,15 @@
+         consensus.BIP65Height = 388381; // 000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0
+         consensus.BIP66Height = 363725; // 00000000000000000379eaa19dce8c9b722d46ae6a57c2f1a988119488b50931
+         consensus.CSVHeight = 419328; // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
+-        consensus.SegwitHeight = 481824; // 0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893
++        consensus.SegwitHeight = 0; // SegWit active from the genesis block (Labnet)
+         consensus.MinBIP9WarningHeight = 483840; // segwit activation height + miner confirmation window
++        // The Labnet keeps the mainnet powLimit, so the difficulty never drops below 1
+         consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+         consensus.nPowTargetSpacing = 10 * 60;
+         consensus.fPowAllowMinDifficultyBlocks = false;
+         consensus.enforce_BIP94 = false;
+-        consensus.fPowNoRetargeting = false;
++        consensus.fPowNoRetargeting = true; // The Labnet has a single small miner, so the difficulty is never adjusted
+         consensus.nRuleChangeActivationThreshold = 1815; // 90% of 2016
+         consensus.nMinerConfirmationWindow = 2016; // nPowTargetTimespan / nPowTargetSpacing
+         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
+@@ -121,7 +122,7 @@
+         consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].bit = 2;
+         consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].nStartTime = 1619222400; // April 24th, 2021
+         consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].nTimeout = 1628640000; // August 11th, 2021
+-        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].min_activation_height = 709632; // Approximately November 12th, 2021
++        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].min_activation_height = 0; // Taproot active from the genesis block (Labnet)
+ 
+         // ReducedData Temporary Softfork (RDTS)
+         consensus.vDeployments[Consensus::DEPLOYMENT_REDUCED_DATA].bit = 4;
+@@ -140,8 +141,8 @@
+             consensus.vDeployments[Consensus::DEPLOYMENT_REDUCED_DATA].threshold = 0;
+         }
+ 
+-        consensus.nMinimumChainWork = uint256{"0000000000000000000000000000000000000000dee8e2a309ad8a9820433c68"};
+-        consensus.defaultAssumeValid = uint256{"00000000000000000000611fd22f2df7c8fbd0688745c3a6c3bb5109cc2a12cb"}; // 912683
++        consensus.nMinimumChainWork = uint256{"0000000000000000000000000000000000000000000000000000000000000000"}; // The Labnet chain has very little work
++        consensus.defaultAssumeValid = uint256{}; // No mainnet block exists on the Labnet chain
+ 
+         /**
+          * The message start string is designed to be unlikely to occur in normal data.

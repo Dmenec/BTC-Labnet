@@ -25,7 +25,7 @@ The node is Bitcoin Core **v30.0** with two source files patched at build time: 
 - `IsInitialBlockDownload()` no longer returns `true` when the tip is older than `max_tip_age`. Without this, the node stays in IBD whenever nobody has mined for a while, `getblocktemplate` fails, and the pool cannot give work to the miner.
 - `ContextualCheckBlockHeader()` skips the `bad-diffbits` check when `fPowNoRetargeting` is set. Upstream then requires every block to repeat the previous block's `nBits`; with the patch, any `nBits` within `powLimit` is accepted.
 
-[services/knots/](services/knots/) applies the same patches to Bitcoin Knots `v29.2.knots20251110`, except for the IBD change (Knots does not serve block templates).
+[services/knots/](services/knots/) applies the same patches to Bitcoin Knots (`v29.4.knots20260508`, and `v29.2.knots20251110` before it), except for the IBD change (Knots does not serve block templates).
 
 ## Running a node
 

@@ -1,9 +1,11 @@
-# Build Bitcoin Knots from the upstream tag with the Labnet patches
+# Build Bitcoin Knots from the upstream tag with the Labnet patches. Each
+# version has its own patches in patches/<version>/; an older one is built with
+#   docker build --build-arg BITCOIN_VERSION=29.2.knots20251110 -t knots-v29.2 knots
 FROM ubuntu:22.04 AS builder
 
 ARG UID=101
 ARG GID=101
-ARG BITCOIN_VERSION="29.2.knots20251110"
+ARG BITCOIN_VERSION="29.4.knots20260508"
 
 RUN groupadd --gid ${GID} bitcoin \
  && useradd --create-home --no-log-init -u ${UID} -g ${GID} bitcoin
@@ -28,13 +30,18 @@ RUN until git clone --branch v${BITCOIN_VERSION} --depth 1 \
     done
 
 # Labnet consensus changes, explained at the top of each patch
-COPY patches/ /tmp/patches/
+COPY patches/${BITCOIN_VERSION}/ /tmp/patches/
 RUN cd /opt/bitcoin-${BITCOIN_VERSION} && git apply /tmp/patches/*.patch
 
 WORKDIR /opt/bitcoin-${BITCOIN_VERSION}
 
+# Since 29.3.knots20260508 the build has to choose how the node treats the
+# BIP110 (RDTS) soft fork. UNSUPPORTED_UNSAFE_NO_ENFORCEMENT leaves it never
+# active, so the node follows the same rules as the Core node (it logs a
+# warning every hour). Earlier versions ignore the option.
 RUN cmake -S . -B build -G Ninja \
       -DBUILD_GUI=OFF \
+      -DRDTS_CONSENT=UNSUPPORTED_UNSAFE_NO_ENFORCEMENT \
       -DENABLE_ZMQ=ON \
       -DENABLE_IPC=OFF \
   && cmake --build build -- -j"$(nproc --all)" \
@@ -45,7 +52,7 @@ FROM ubuntu:22.04
 
 ARG UID=101
 ARG GID=101
-ARG BITCOIN_VERSION="29.2.knots20251110"
+ARG BITCOIN_VERSION="29.4.knots20260508"
 
 RUN groupadd --gid ${GID} bitcoin \
   && useradd --create-home --no-log-init -u ${UID} -g ${GID} bitcoin

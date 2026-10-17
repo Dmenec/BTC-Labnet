@@ -6,7 +6,8 @@ All of them join the node's Docker network `bitcoin_network` (`172.18.0.0/16`) w
 
 | Service | Container | IP | Host ports | Directory |
 |---|---|---|---|---|
-| Bitcoin Knots v29.2 | `knots-v29.2` | 172.18.0.2 | 9332 (RPC) | [knots/](knots/) |
+| Bitcoin Knots v29.4 | `knots-v29.4` | 172.18.0.8 | 9342 (RPC) | [knots/](knots/) |
+| Bitcoin Knots v29.2 (previous version, kept) | `knots-v29.2` | 172.18.0.2 | 9332 (RPC) | [knots/](knots/) |
 | ElectrumX + Electrum daemon | `electrum_server_container` | 172.18.0.5 | 50001, 50002, 7777 | [electrum/](electrum/) |
 | mempool DB / API / web | `mempool-db-1`, `mempool-api-1`, `mempool-web-1` | .4 / .7 / .6 | 8888 (web) | [mempool/](mempool/) |
 | mainnet-observer | `mainnet-observer-frontend` | default bridge | 8889 | [observer/](observer/) |
@@ -18,18 +19,27 @@ Commands below are run from this directory.
 
 ## Knots ([knots/](knots/))
 
-Bitcoin Knots `v29.2.knots20251110` with the same consensus patches as the node (see the main [README](../README.md#consensus-patches)), except for the IBD change: Knots does not serve block templates. Diffs against the upstream tag are in [knots/patches/](knots/patches/).
+Bitcoin Knots `v29.4.knots20260508` with the same consensus patches as the node (see the main [README](../README.md#consensus-patches)), except for the IBD change: Knots does not serve block templates. Each version has its own diffs against its upstream tag, in [knots/patches/](knots/patches/)`<version>/`.
+
+Two versions run side by side, each with its own data volume, so the wallets of one never open in the other (a newer Knots upgrades a wallet file when it loads it):
+
+- **29.4** is the current one. Later releases are not used: 29.4.1 is a hard fork (BLAKE2b proof of work, and wallets sign with a new sighash that this chain rejects). The build disables BIP110 (RDTS), see the [Dockerfile](knots/Dockerfile).
+- **29.2** is the previous one, kept so wallet fingerprints can be compared across versions.
 
 It uses the same RPC credentials as the node, from the root `.env`:
 
 ```bash
 set -a; . ../.env; set +a
-docker build -t knots-v29.2 knots
-docker run -d --name knots-v29.2 --network bitcoin_network --ip 172.18.0.2 --restart unless-stopped \
-  -v knots_data:/home/bitcoin/.bitcoin -p 9332:8332 knots-v29.2 \
+docker build -t knots-v29.4 knots
+docker run -d --name knots-v29.4 --network bitcoin_network --ip 172.18.0.8 --restart unless-stopped \
+  -v knots_29_4_data:/home/bitcoin/.bitcoin -p 9342:8332 knots-v29.4 \
   -printtoconsole -txindex=1 -dnsseed=0 -fixedseeds=0 -addnode=core-v30.0-v1:8333 \
   -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASSWORD"
 ```
+
+The previous version is built and run the same way, with
+`--build-arg BITCOIN_VERSION=29.2.knots20251110`, the name `knots-v29.2`, the IP
+`172.18.0.2`, the volume `knots_data` and the port `9332`.
 
 ## Electrum ([electrum/](electrum/))
 
