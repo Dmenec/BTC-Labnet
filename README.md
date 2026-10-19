@@ -6,7 +6,7 @@ This repository contains the node. Optional services that run next to it (Knots,
 
 ## Consensus patches
 
-The node is Bitcoin Core **v30.0** with two source files patched at build time: [core/Dockerfile](core/Dockerfile) clones the upstream tag and applies the diffs in [core/patches/](core/patches/).
+The node is Bitcoin Core **v30.0** with two source files patched at build time: [core/Dockerfile](core/Dockerfile) clones the upstream tag and applies the diffs in [core/patches/30.0/](core/patches/30.0/). The same Dockerfile builds other versions with their own diffs ([core/patches/32.0/](core/patches/32.0/), for a separate wallet node; see the top of the Dockerfile).
 
 **`src/kernel/chainparams.cpp`** (mainnet section):
 

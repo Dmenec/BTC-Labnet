@@ -1,0 +1,40 @@
+Labnet consensus parameters for Bitcoin Core v32.0, in the mainnet section.
+
+SegWit is active from the genesis block (Taproot already is: since v32.0 it is
+buried, active everywhere but one historical mainnet block). The chain has a
+single small miner, so the difficulty is never retargeted, and there is no
+minimum chain work or assumed-valid block. powLimit stays at the mainnet value,
+so the difficulty never drops below 1.
+
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -121,14 +121,15 @@
+         consensus.BIP65Height = 388381; // 000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0
+         consensus.BIP66Height = 363725; // 00000000000000000379eaa19dce8c9b722d46ae6a57c2f1a988119488b50931
+         consensus.CSVHeight = 419328; // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
+-        consensus.SegwitHeight = 481824; // 0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893
+-        consensus.MinBIP9WarningHeight = 711648; // taproot activation height + miner confirmation window
++        consensus.SegwitHeight = 0; // SegWit active from the genesis block (Labnet)
++        consensus.MinBIP9WarningHeight = 0; // Follows SegwitHeight (Labnet)
++        // The Labnet keeps the mainnet powLimit, so the difficulty never drops below 1
+         consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+         consensus.nPowTargetSpacing = 10 * 60;
+         consensus.fPowAllowMinDifficultyBlocks = false;
+         consensus.enforce_BIP94 = false;
+-        consensus.fPowNoRetargeting = false;
++        consensus.fPowNoRetargeting = true; // The Labnet has a single small miner, so the difficulty is never adjusted
+         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
+         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = Consensus::BIP9Deployment::NEVER_ACTIVE;
+         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = Consensus::BIP9Deployment::NO_TIMEOUT;
+@@ -138,8 +139,8 @@
+ 
+         ApplyDeploymentOptions(opts.dep_opts);
+ 
+-        consensus.nMinimumChainWork = uint256{"000000000000000000000000000000000000000145ec036acc5ba740052af1a0"};
+-        consensus.defaultAssumeValid = uint256{"00000000000000000000748969ec33043c0e52a763c6dd5193861f559f2c72e3"}; // 966143
++        consensus.nMinimumChainWork = uint256{"0000000000000000000000000000000000000000000000000000000000000000"}; // The Labnet chain has very little work
++        consensus.defaultAssumeValid = uint256{}; // No mainnet block exists on the Labnet chain
+ 
+         /**
+          * The message start string is designed to be unlikely to occur in normal data.

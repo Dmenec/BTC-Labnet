@@ -1,5 +1,9 @@
-# Build Bitcoin Core from the upstream tag with the Labnet patches
-FROM ubuntu:22.04 AS builder
+# Build Bitcoin Core from the upstream tag with the Labnet patches. Each version
+# has its own patches in patches/<version>/. The default builds the Labnet's
+# node; a newer wallet node (32.0 needs GCC 12.1 or later) is built with
+#   docker build --build-arg BITCOIN_VERSION=32.0 --build-arg BASE_IMAGE=ubuntu:24.04 -t core-v32.0 core
+ARG BASE_IMAGE=ubuntu:22.04
+FROM ${BASE_IMAGE} AS builder
 
 ARG UID=101
 ARG GID=101
@@ -28,7 +32,7 @@ RUN until git clone --branch v${BITCOIN_VERSION} --depth 1 \
     done
 
 # Labnet consensus changes, explained at the top of each patch
-COPY patches/ /tmp/patches/
+COPY patches/${BITCOIN_VERSION}/ /tmp/patches/
 RUN cd /opt/bitcoin-${BITCOIN_VERSION} && git apply /tmp/patches/*.patch
 
 WORKDIR /opt/bitcoin-${BITCOIN_VERSION}
@@ -41,7 +45,7 @@ RUN cmake -S . -B build -G Ninja \
   && cmake --install build
 
 # Runtime image
-FROM ubuntu:22.04
+FROM ${BASE_IMAGE}
 
 ARG UID=101
 ARG GID=101
