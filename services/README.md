@@ -6,7 +6,7 @@ All of them join the node's Docker network `bitcoin_network` (`172.18.0.0/16`) w
 
 | Service | Container | IP | Host ports | Directory |
 |---|---|---|---|---|
-| Bitcoin Knots v29.4 | `knots-v29.4` | 172.18.0.8 | 9342 (RPC) | [knots/](knots/) |
+| Bitcoin Knots v29.4 | `knots-v29.4` | 172.18.0.8 | 9342 (RPC, localhost only) | [knots/](knots/) |
 | Bitcoin Knots v29.2 (previous version, kept) | `knots-v29.2` | 172.18.0.2 | 9332 (RPC) | [knots/](knots/) |
 | ElectrumX + Electrum daemon | `electrum_server_container` | 172.18.0.5 | 50001, 50002, 7777 | [electrum/](electrum/) |
 | Electrum 4.8.2 client (daemon only) | `electrum-client-4.8.2` | 172.18.0.9 | 7778 (RPC) | [electrum-client/](electrum-client/) |
@@ -33,10 +33,27 @@ It uses the same RPC credentials as the node, from the root `.env`:
 set -a; . ../.env; set +a
 docker build -t knots-v29.4 knots
 docker run -d --name knots-v29.4 --network bitcoin_network --ip 172.18.0.8 --restart unless-stopped \
-  -v knots_29_4_data:/home/bitcoin/.bitcoin -p 9342:8332 knots-v29.4 \
+  -v knots_29_4_data:/home/bitcoin/.bitcoin -p 127.0.0.1:9342:8332 knots-v29.4 \
   -printtoconsole -txindex=1 -dnsseed=0 -fixedseeds=0 -addnode=core-v30.0-v1:8333 \
   -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASSWORD"
 ```
+
+To compare the two versions, both must run with the same settings, and the
+image only brings a default `bitcoin.conf`. The running 29.2 node's copy was
+edited inside its volume (mempool ancestor and descendant limits, `maxmempool`,
+RPC access), and those limits decide which unconfirmed coins the wallet may
+spend. So the new volume gets an exact copy of it, then the node restarts:
+
+```bash
+umask 077; T=$(mktemp)
+docker cp knots-v29.2:/home/bitcoin/.bitcoin/bitcoin.conf "$T"
+docker cp "$T" knots-v29.4:/home/bitcoin/.bitcoin/bitcoin.conf
+docker exec knots-v29.4 chown bitcoin:bitcoin /home/bitcoin/.bitcoin/bitcoin.conf
+rm -f "$T"; docker restart knots-v29.4
+```
+
+The orchestrator uses the new node when `BITCOIN_KNOTS_RPC_URL` points at
+`http://127.0.0.1:9342` (set in the environment of the run, or in its `.env`).
 
 The previous version is built and run the same way, with
 `--build-arg BITCOIN_VERSION=29.2.knots20251110`, the name `knots-v29.2`, the IP
