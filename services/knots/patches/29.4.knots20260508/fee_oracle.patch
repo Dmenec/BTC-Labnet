@@ -1,0 +1,537 @@
+Labnet fee oracle for Bitcoin Knots v29.4.knots20260508.
+
+Adds -feeoraclefile=<file> and -feeoraclemaxage=<seconds> (default 600). While
+the file's "t" is at most that old, fee estimates come from its "estimates"
+(mainnet sat/vB by confirmation target, written by the Labnet's fee oracle):
+for a requested target N, the smallest target in the file >= N (the largest
+if N is above all), converted to sat/kvB and rounded, with that target as the
+returned one, raised to the lowest fee rate this version's estimator can return
+(MIN_BUCKET_FEERATE, 1000 sat/kvB): mainnet's Esplora runs a newer Core that
+estimates below it, which this version never does. The estimate mode does not
+change the answer. The RPC and the
+wallet's internal call both go through the hook in CBlockPolicyEstimator::estimateSmartFee(),
+so the wallet's own logic around the estimate is unchanged. When the option is
+unset or the file is missing, stale, unreadable or has no estimates, the node
+behaves as unpatched; each change of state is logged once.
+
+The code is in a new file (fee_oracle.cpp), plus the options in init.cpp and a
+functional test (test/functional/feature_fee_oracle.py).
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 1004aa6..eccb8d6 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -293,6 +293,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
+   node/warnings.cpp
+   noui.cpp
+   policy/ephemeral_policy.cpp
++  policy/fee_oracle.cpp
+   policy/fees.cpp
+   policy/fees_args.cpp
+   policy/packages.cpp
+diff --git a/src/init.cpp b/src/init.cpp
+index ea8d32e..abd7cea 100644
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -62,6 +62,7 @@
+ #include <node/mempool_persist_args.h>
+ #include <node/miner.h>
+ #include <node/peerman_args.h>
++#include <policy/fee_oracle.h>
+ #include <policy/feerate.h>
+ #include <policy/fees.h>
+ #include <policy/fees_args.h>
+@@ -721,6 +722,8 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
+                              DEFAULT_DUST_RELAY_MULTIPLIER / 1000.,
+                              DEFAULT_DUST_DYNAMIC), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
+     argsman.AddArg("-acceptstalefeeestimates", strprintf("Read fee estimates even if they are stale (%sdefault: %u) fee estimates are considered stale if they are %s hours old", "regtest only; ", DEFAULT_ACCEPT_STALE_FEE_ESTIMATES, Ticks<std::chrono::hours>(MAX_FILE_AGE)), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
++    argsman.AddArg("-feeoraclefile=<file>", "Take fee estimates (estimatesmartfee and the wallet's) from the \"estimates\" of this JSON snapshot of mainnet fee data while it is fresh, see -feeoraclemaxage (Labnet). Relative paths are prefixed by the data directory (default: none)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
++    argsman.AddArg("-feeoraclemaxage=<n>", strprintf("Ignore the -feeoraclefile snapshot while its \"t\" is more than <n> seconds old (Labnet; default: %u)", DEFAULT_FEE_ORACLE_MAX_AGE), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-bytespersigop", strprintf("Equivalent bytes per sigop in transactions for relay and mining (default: %u)", DEFAULT_BYTES_PER_SIGOP), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
+     argsman.AddArg("-bytespersigopstrict", strprintf("Minimum bytes per sigop in transactions we relay and mine (default: %u)", DEFAULT_BYTES_PER_SIGOP_STRICT), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
+     argsman.AddArg("-datacarrier", strprintf("Relay and mine data carrier transactions (default: %u)", DEFAULT_ACCEPT_DATACARRIER), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
+@@ -1892,6 +1895,15 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
+     // Don't initialize fee estimation with old data if we don't relay transactions,
+     // as they would never get updated.
+     if (!peerman_opts.ignore_incoming_txs) {
++        // Labnet: fee estimates come from the fee oracle's snapshot while it is fresh
++        const int64_t fee_oracle_max_age{args.GetIntArg("-feeoraclemaxage", DEFAULT_FEE_ORACLE_MAX_AGE)};
++        if (fee_oracle_max_age <= 0) {
++            return InitError(Untranslated("-feeoraclemaxage must be greater than 0"));
++        }
++        fs::path fee_oracle_file{args.GetPathArg("-feeoraclefile")};
++        if (!fee_oracle_file.empty()) fee_oracle_file = AbsPathForConfigVal(args, fee_oracle_file, /*net_specific=*/false);
++        fee_oracle::Configure(fee_oracle_file, std::chrono::seconds{fee_oracle_max_age});
++
+         bool read_stale_estimates = args.GetBoolArg("-acceptstalefeeestimates", DEFAULT_ACCEPT_STALE_FEE_ESTIMATES);
+         node.fee_estimator = std::make_unique<CBlockPolicyEstimator>(FeeestPath(args), read_stale_estimates);
+ 
+diff --git a/src/policy/fee_oracle.cpp b/src/policy/fee_oracle.cpp
+new file mode 100644
+index 0000000..e3c9d49
+--- /dev/null
++++ b/src/policy/fee_oracle.cpp
+@@ -0,0 +1,198 @@
++// Copyright (c) The Bitcoin Core developers
++// Distributed under the MIT software license, see the accompanying
++// file COPYING or http://www.opensource.org/licenses/mit-license.php.
++
++#include <policy/fee_oracle.h>
++
++#include <logging.h>
++#include <sync.h>
++#include <tinyformat.h>
++#include <univalue.h>
++#include <util/fs.h>
++#include <util/readwritefile.h>
++#include <util/strencodings.h>
++#include <util/time.h>
++
++#include <cmath>
++#include <cstdint>
++#include <exception>
++#include <iterator>
++#include <map>
++#include <optional>
++#include <string>
++#include <system_error>
++
++namespace fee_oracle {
++namespace {
++
++//! A snapshot is a few kB; a larger file is not one
++constexpr size_t MAX_FILE_SIZE{16 << 20};
++//! Estimates above this many sat/vB make the file unusable
++constexpr double MAX_SAT_PER_VB{1'000'000};
++
++enum class State {
++    UNSET,   //!< no estimate asked for yet
++    FRESH,   //!< the oracle answers
++    STALE,   //!< "t" is older than the maximum age
++    MISSING, //!< the file does not exist or cannot be opened
++    INVALID, //!< the file cannot be read or has no usable estimates
++};
++
++struct Snapshot {
++    //! Modification time and size of the file this was read from
++    fs::file_time_type mtime;
++    std::uintmax_t size{0};
++    //! Why the file cannot be used; empty when it can
++    std::string error;
++    //! Labnet time the snapshot stands for (its "t"), in unix seconds
++    double t{0};
++    //! Confirmation target -> fee rate in sat/kvB
++    std::map<int, int64_t> estimates;
++};
++
++GlobalMutex g_mutex;
++fs::path g_path GUARDED_BY(g_mutex);
++std::chrono::seconds g_max_age GUARDED_BY(g_mutex){DEFAULT_FEE_ORACLE_MAX_AGE};
++//! Last file read, reused while its modification time and size stay the same
++std::optional<Snapshot> g_snapshot GUARDED_BY(g_mutex);
++//! State of the last call, to log only the changes
++State g_state GUARDED_BY(g_mutex){State::UNSET};
++
++void Parse(const std::string& text, Snapshot& snapshot)
++{
++    try {
++        UniValue json;
++        if (!json.read(text) || !json.isObject()) {
++            snapshot.error = "not a JSON object";
++            return;
++        }
++        const UniValue& schema{json.find_value("schema")};
++        if (!schema.isNum() || schema.get_real() != 1) {
++            snapshot.error = "\"schema\" is not 1";
++            return;
++        }
++        const UniValue& t{json.find_value("t")};
++        if (!t.isNum() || !std::isfinite(t.get_real())) {
++            snapshot.error = "no valid \"t\"";
++            return;
++        }
++        snapshot.t = t.get_real();
++        const UniValue& estimates{json.find_value("estimates")};
++        if (!estimates.isObject()) {
++            snapshot.error = "\"estimates\" is not an object";
++            return;
++        }
++        const auto& keys{estimates.getKeys()};
++        const auto& values{estimates.getValues()};
++        for (size_t i{0}; i < keys.size(); ++i) {
++            // Keys that are not positive targets and values that are not
++            // positive fee rates (null when a source failed) are skipped
++            const auto target{ToIntegral<int>(keys[i])};
++            if (!target || *target < 1 || !values[i].isNum()) continue;
++            const double sat_per_vb{values[i].get_real()};
++            if (!(sat_per_vb > 0)) continue;
++            if (sat_per_vb > MAX_SAT_PER_VB) {
++                snapshot.error = strprintf("estimate for target %d is too high", *target);
++                return;
++            }
++            snapshot.estimates[*target] = std::llround(sat_per_vb * 1000);
++        }
++        if (snapshot.estimates.empty()) snapshot.error = "no usable estimates";
++    } catch (const std::exception& e) {
++        snapshot.error = e.what();
++    }
++}
++
++/** Bring g_snapshot up to date with the file and return the oracle's state; detail says why. */
++State Refresh(std::string& detail) EXCLUSIVE_LOCKS_REQUIRED(g_mutex)
++{
++    std::error_code ec;
++    const auto mtime{fs::last_write_time(g_path, ec)};
++    std::uintmax_t size{0};
++    if (!ec) size = fs::file_size(g_path, ec);
++    if (ec) {
++        g_snapshot.reset();
++        detail = ec.message();
++        return State::MISSING;
++    }
++    if (!g_snapshot || g_snapshot->mtime != mtime || g_snapshot->size != size) {
++        g_snapshot.emplace();
++        g_snapshot->mtime = mtime;
++        g_snapshot->size = size;
++        const auto [ok, text]{ReadBinaryFile(g_path, MAX_FILE_SIZE)};
++        if (!ok) {
++            g_snapshot->error = "cannot read the file";
++        } else if (text.size() > MAX_FILE_SIZE) {
++            g_snapshot->error = "the file is too large";
++        } else {
++            Parse(text, *g_snapshot);
++        }
++        if (g_snapshot->error.empty()) {
++            LogDebug(BCLog::ESTIMATEFEE, "Fee oracle: read %s (t=%.0f, %u targets)", fs::PathToString(g_path), g_snapshot->t, g_snapshot->estimates.size());
++        }
++    }
++    if (!g_snapshot->error.empty()) {
++        detail = g_snapshot->error;
++        return State::INVALID;
++    }
++    const double age{TicksSinceEpoch<std::chrono::seconds>(NodeClock::now()) - g_snapshot->t};
++    if (age > g_max_age.count()) {
++        detail = strprintf("t=%.0f is %.0f seconds old, more than %d", g_snapshot->t, age, g_max_age.count());
++        return State::STALE;
++    }
++    detail = strprintf("t=%.0f, %u targets", g_snapshot->t, g_snapshot->estimates.size());
++    return State::FRESH;
++}
++
++} // namespace
++
++void Configure(const fs::path& path, std::chrono::seconds max_age)
++{
++    LOCK(g_mutex);
++    g_path = path;
++    g_max_age = max_age;
++    g_snapshot.reset();
++    g_state = State::UNSET;
++    if (!g_path.empty()) {
++        LogInfo("Fee oracle: fee estimates come from %s while its \"t\" is at most %d seconds old", fs::PathToString(g_path), g_max_age.count());
++    }
++}
++
++std::optional<Estimate> GetEstimate(int conf_target)
++{
++    LOCK(g_mutex);
++    if (g_path.empty()) return std::nullopt;
++
++    std::string detail;
++    const State state{Refresh(detail)};
++    if (state != g_state) {
++        g_state = state;
++        const std::string path{fs::PathToString(g_path)};
++        switch (state) {
++        case State::FRESH:
++            LogInfo("Fee oracle: answering fee estimates from %s (%s)", path, detail);
++            break;
++        case State::STALE:
++            LogInfo("Fee oracle: %s is stale (%s), the node's own estimator answers", path, detail);
++            break;
++        case State::MISSING:
++            LogInfo("Fee oracle: cannot open %s (%s), the node's own estimator answers", path, detail);
++            break;
++        case State::INVALID:
++            LogInfo("Fee oracle: cannot use %s (%s), the node's own estimator answers", path, detail);
++            break;
++        case State::UNSET:
++            break;
++        }
++    }
++    if (state != State::FRESH || conf_target < 1) return std::nullopt;
++
++    // Smallest target >= conf_target, or the largest one
++    const auto& estimates{g_snapshot->estimates};
++    auto it{estimates.lower_bound(conf_target)};
++    if (it == estimates.end()) it = std::prev(it);
++    LogDebug(BCLog::ESTIMATEFEE, "Fee oracle: target %d answered with target %d, %d sat/kvB", conf_target, it->first, it->second);
++    return Estimate{it->first, it->second};
++}
++
++} // namespace fee_oracle
+diff --git a/src/policy/fee_oracle.h b/src/policy/fee_oracle.h
+new file mode 100644
+index 0000000..7afaff4
+--- /dev/null
++++ b/src/policy/fee_oracle.h
+@@ -0,0 +1,52 @@
++// Copyright (c) The Bitcoin Core developers
++// Distributed under the MIT software license, see the accompanying
++// file COPYING or http://www.opensource.org/licenses/mit-license.php.
++
++#ifndef BITCOIN_POLICY_FEE_ORACLE_H
++#define BITCOIN_POLICY_FEE_ORACLE_H
++
++#include <util/fs.h>
++
++#include <chrono>
++#include <cstdint>
++#include <optional>
++
++/**
++ * Labnet fee oracle: fee estimates from a snapshot of mainnet fee data.
++ *
++ * The Labnet's mempool is almost empty, so the node's own estimator has no data.
++ * With -feeoraclefile, fee estimates (the estimatesmartfee RPC and the wallet's
++ * internal call alike) come from the "estimates" object of a JSON snapshot that an
++ * external service rewrites atomically about once a minute:
++ *
++ *   {"schema": 1, "t": <unix seconds>, "estimates": {"<target>": <sat/vB>, ...}, ...}
++ *
++ * For a requested target N the answer is the estimate of the smallest target key
++ * T >= N (the largest key if N is above all of them), converted to sat/kvB and
++ * rounded to the nearest integer, and the returned target is T. The estimate mode
++ * does not change the answer. When the option is unset, or the file is missing,
++ * unreadable, or older than -feeoraclemaxage by its "t", the node's own estimator
++ * answers as usual.
++ */
++
++//! Default for -feeoraclemaxage, in seconds
++static constexpr int64_t DEFAULT_FEE_ORACLE_MAX_AGE{600};
++
++namespace fee_oracle {
++
++struct Estimate {
++    //! Confirmation target of the estimate (a key of "estimates")
++    int target;
++    //! Fee rate in sat/kvB
++    int64_t fee_per_kvb;
++};
++
++/** Take estimates from the file at path (empty disables the oracle) while its "t" is at most max_age old. */
++void Configure(const fs::path& path, std::chrono::seconds max_age);
++
++/** The oracle's estimate for conf_target, or nullopt when the node's own estimator has to answer. Thread safe. */
++std::optional<Estimate> GetEstimate(int conf_target);
++
++} // namespace fee_oracle
++
++#endif // BITCOIN_POLICY_FEE_ORACLE_H
+diff --git a/src/policy/fees.cpp b/src/policy/fees.cpp
+index 8244834..60f28b3 100644
+--- a/src/policy/fees.cpp
++++ b/src/policy/fees.cpp
+@@ -9,6 +9,7 @@
+ #include <consensus/amount.h>
+ #include <kernel/mempool_entry.h>
+ #include <logging.h>
++#include <policy/fee_oracle.h>
+ #include <policy/feerate.h>
+ #include <primitives/transaction.h>
+ #include <random.h>
+@@ -869,6 +870,16 @@ double CBlockPolicyEstimator::estimateConservativeFee(unsigned int doubleTarget,
+  */
+ CFeeRate CBlockPolicyEstimator::estimateSmartFee(int confTarget, FeeCalculation *feeCalc, bool conservative) const
+ {
++    // Labnet: while -feeoraclefile is fresh, mainnet's estimate answers instead, raised to this estimator's lowest bucket
++    if (const auto oracle{fee_oracle::GetEstimate(confTarget)}) {
++        if (feeCalc) {
++            feeCalc->reason = FeeReason::FULL_ESTIMATE;
++            feeCalc->desiredTarget = confTarget;
++            feeCalc->returnedTarget = oracle->target;
++        }
++        return CFeeRate{std::max<CAmount>(oracle->fee_per_kvb, static_cast<CAmount>(MIN_BUCKET_FEERATE))};
++    }
++
+     LOCK(m_cs_fee_estimator);
+ 
+     if (feeCalc) {
+diff --git a/test/functional/feature_fee_oracle.py b/test/functional/feature_fee_oracle.py
+new file mode 100755
+index 0000000..aef792d
+--- /dev/null
++++ b/test/functional/feature_fee_oracle.py
+@@ -0,0 +1,160 @@
++#!/usr/bin/env python3
++# Copyright (c) The Bitcoin Core developers
++# Distributed under the MIT software license, see the accompanying
++# file COPYING or http://www.opensource.org/licenses/mit-license.php.
++"""Test the Labnet fee oracle (-feeoraclefile, -feeoraclemaxage).
++
++While the snapshot is fresh by its "t", estimatesmartfee and the wallet answer
++from its "estimates" (sat/vB by confirmation target). Otherwise the node's own
++estimator answers, which on this chain has no data.
++"""
++from decimal import Decimal
++import json
++import os
++import time
++
++from test_framework.test_framework import BitcoinTestFramework
++from test_framework.util import (
++    assert_equal,
++    assert_fee_amount,
++)
++
++ESTIMATES = {"1": 25.0004, "2": 20.0006, "6": 12.5, "144": 3.21, "504": 2.5, "1008": None}
++# Requested target -> (returned target, sat/kvB)
++EXPECTED = {
++    1: (1, 25000),
++    2: (2, 20001),
++    3: (6, 12500),
++    6: (6, 12500),
++    7: (144, 3210),
++    144: (144, 3210),
++    504: (504, 2500),
++    1008: (504, 2500),
++}
++# -fallbackfee of the test framework, in sat/kvB
++FALLBACK_FEE = 20000
++# A snapshot written by the oracle (its "t" is replaced), with Esplora's float noise
++REAL_SNAPSHOT = json.loads('{"schema": 1, "source_t": 1792492860.0, "t": 1792492860.0, "mainnet_tip": 972307, "estimates": {"1": 1.066, "2": 1.066, "3": 0.142, "4": 0.142, "5": 0.142, "6": 0.142, "7": 0.142, "8": 0.142, "9": 0.142, "10": 0.142, "11": 0.142, "12": 0.142, "13": 0.13599999999999998, "14": 0.13599999999999998, "15": 0.134, "16": 0.134, "17": 0.134, "18": 0.134, "19": 0.134, "20": 0.134, "21": 0.134, "22": 0.134, "23": 0.134, "24": 0.134, "25": 0.134, "144": 0.126, "504": 0.09999999999999999, "1008": 0.09999999999999999}, "histogram": [[3.1551957, 50102], [2.1606915, 52127], [2.011236, 50098], [1.2071428, 51685], [1.0071429, 52126], [0.24, 58236], [0.208, 52639], [0.1438849, 85780], [0.14027415, 76780], [0.14026797, 67920], [0.13669065, 90462], [0.136, 1980875], [0.13023664, 5680485], [0.13023064, 67941], [0.13022873, 67942], [0.13000526, 89381], [0.12358888, 96884], [0.123587936, 93480], [0.12104642, 57606], [0.12023073, 73334], [0.120213784, 6538851], [0.12000594, 60597], [0.11543946, 99576], [0.105003506, 644237], [0.105002455, 899379], [0.1050014, 99932], [0.104, 3300722], [0.10263158, 50077], [0.10218978, 150648], [0.10144927, 140411], [0.101037264, 72727], [0.10087742, 106427], [0.10087711, 57575], [0.10037841, 73162], [0.10021779, 66844], [0.10020372, 96928], [0.10019084, 64611], [0.10018695, 73213], [0.10018687, 67963], [0.100185394, 67964], [0.1001832, 67137], [0.10018097, 67967], [0.10017949, 67968], [0.10017655, 68529], [0.100175075, 67971], [0.10011739, 60750], [0.10008046, 53943], [0.100068584, 58705], [0.10005631, 60376], [0.1000478, 100021], [0.10004488, 120825], [0.100040294, 60735], [0.10002792, 76396], [0.100024134, 95296], [0.10002018, 73004], [0.10001947, 71226], [0.10001939, 51580], [0.100016765, 101083], [0.10001484, 67360], [0.10000532, 135030], [0.10000524, 95475], [0.10000518, 96475], [0.10000511, 97855], [0.10000506, 98835], [0.10000427, 93666], [0.100004196, 95316], [0.10000329, 91207], [0.100003205, 93587], [0.1000032, 93747], [0.100003034, 98797], [0.10000303, 99197], [0.10000301, 99497], [0.10000215, 93008], [0.10000211, 94788], [0.10000206, 97278], [0.10000204, 97818], [0.10000101, 99129], [0.0, 1564]], "recommended": {"fastestFee": 1, "halfHourFee": 1, "hourFee": 1, "economyFee": 1, "minimumFee": 1}, "precise": {"fastestFee": 1, "halfHourFee": 0.5, "hourFee": 0.139, "economyFee": 0.139, "minimumFee": 0.1}, "min_relay": 0.1}')
++# Requested target -> (returned target, sat/kvB) for REAL_SNAPSHOT
++REAL_EXPECTED = {1: (1, 1066), 2: (2, 1066), 3: (3, 142), 13: (13, 136), 26: (144, 126), 504: (504, 100), 1008: (1008, 100)}
++
++
++def btc_per_kvb(sat_per_kvb):
++    return Decimal(sat_per_kvb) / Decimal(100_000_000)
++
++
++class FeeOracleTest(BitcoinTestFramework):
++    def add_options(self, parser):
++        self.add_wallet_options(parser)
++
++    def set_test_params(self):
++        self.num_nodes = 1
++
++    def skip_test_if_missing_module(self):
++        self.skip_if_no_wallet()
++
++    def write_snapshot(self, estimates=ESTIMATES, t=None, schema=1, raw=None):
++        # Write to a temporary name and rename, as the oracle does
++        t = float(self.now) if t is None else t
++        text = raw if raw is not None else json.dumps({"schema": schema, "source_t": t, "t": t, "estimates": estimates})
++        tmp = self.oracle_file + ".tmp"
++        with open(tmp, "w") as f:
++            f.write(text)
++        os.replace(tmp, self.oracle_file)
++
++    def assert_no_estimate(self):
++        res = self.nodes[0].estimatesmartfee(6)
++        assert "feerate" not in res
++        assert_equal(res["errors"], ["Insufficient data or no feerate found"])
++
++    def assert_estimates(self, expected):
++        node = self.nodes[0]
++        for target, (returned, sat_per_kvb) in expected.items():
++            for mode in ["economical", "conservative"]:
++                assert_equal(node.estimatesmartfee(target, mode), {"feerate": btc_per_kvb(sat_per_kvb), "blocks": returned})
++
++    def assert_wallet_fee(self, conf_target, sat_per_kvb):
++        node = self.nodes[0]
++        txid = node.sendtoaddress(address=node.getnewaddress(), amount=1, conf_target=conf_target)
++        tx = node.gettransaction(txid=txid, verbose=True)
++        assert_fee_amount(-tx["fee"], tx["decoded"]["vsize"], btc_per_kvb(sat_per_kvb))
++
++    def run_test(self):
++        node = self.nodes[0]
++        self.oracle_file = os.path.join(self.options.tmpdir, "current.json")
++        self.now = int(time.time())
++        oracle_args = [f"-feeoraclefile={self.oracle_file}"]
++
++        self.log.info("Without -feeoraclefile the node's own estimator answers")
++        self.assert_no_estimate()
++        self.assert_wallet_fee(3, FALLBACK_FEE)
++
++        self.log.info("A fresh snapshot answers estimatesmartfee in both modes")
++        self.write_snapshot()
++        self.restart_node(0, extra_args=oracle_args)
++        node.setmocktime(self.now + 10)
++        with node.assert_debug_log(expected_msgs=["Fee oracle: answering fee estimates from"]):
++            self.assert_estimates(EXPECTED)
++
++        self.log.info("The wallet takes its fee rate from the oracle")
++        self.assert_wallet_fee(3, 12500)
++        self.assert_wallet_fee(1008, 2500)
++
++        self.log.info("A stale snapshot is ignored, and used again once fresh")
++        with node.assert_debug_log(expected_msgs=["is stale", "the node's own estimator answers"]):
++            node.setmocktime(self.now + 601)
++            self.assert_no_estimate()
++        self.assert_wallet_fee(3, FALLBACK_FEE)
++        with node.assert_debug_log(expected_msgs=["Fee oracle: answering fee estimates from"]):
++            node.setmocktime(self.now + 600)
++            self.assert_estimates({6: (6, 12500)})
++
++        self.log.info("A new snapshot is read when the file changes")
++        self.write_snapshot({"3": 7.0, "12": 5.5})
++        self.assert_estimates({1: (3, 7000), 3: (3, 7000), 4: (12, 5500), 1008: (12, 5500)})
++
++        self.log.info("A snapshot from the oracle is parsed and rounded to the nearest sat/kvB")
++        self.write_snapshot(raw=json.dumps(REAL_SNAPSHOT | {"t": float(self.now)}))
++        # Raised to the estimator's lowest bucket (1000 sat/kvB), which mainnet's newer Core goes below, and by the RPC to the minimum relay fee rate
++        min_relay = int(node.getnetworkinfo()["relayfee"] * 100_000_000)
++        self.assert_estimates({target: (returned, max(sat_per_kvb, 1000, min_relay)) for target, (returned, sat_per_kvb) in REAL_EXPECTED.items()})
++
++        self.log.info("A missing or unusable file is ignored")
++        os.remove(self.oracle_file)
++        with node.assert_debug_log(expected_msgs=["Fee oracle: cannot open"]):
++            self.assert_no_estimate()
++        for raw, reason in [
++            ("not json", "not a JSON object"),
++            (json.dumps({"schema": 2, "t": self.now, "estimates": ESTIMATES}), '"schema" is not 1'),
++            (json.dumps({"schema": 1, "estimates": ESTIMATES}), 'no valid "t"'),
++            (json.dumps({"schema": 1, "t": self.now, "estimates": None}), '"estimates" is not an object'),
++            (json.dumps({"schema": 1, "t": self.now, "estimates": {"2": None, "x": 3}}), "no usable estimates"),
++        ]:
++            with node.assert_debug_log(expected_msgs=[f"Fee oracle: cannot use {self.oracle_file} ({reason})"]):
++                self.write_snapshot(raw=raw)
++                self.assert_no_estimate()
++                # Change state so the next file logs again
++                os.remove(self.oracle_file)
++                self.assert_no_estimate()
++
++        self.log.info("-feeoraclemaxage sets the maximum age")
++        self.write_snapshot()
++        self.restart_node(0, extra_args=oracle_args + ["-feeoraclemaxage=60"])
++        node.setmocktime(self.now + 61)
++        self.assert_no_estimate()
++        node.setmocktime(self.now + 60)
++        self.assert_estimates({6: (6, 12500)})
++
++        self.log.info("-feeoraclemaxage must be positive")
++        self.stop_node(0)
++        node.assert_start_raises_init_error(extra_args=oracle_args + ["-feeoraclemaxage=0"], expected_msg="Error: -feeoraclemaxage must be greater than 0")
++
++        self.log.info("A relative path is in the data directory")
++        os.replace(self.oracle_file, node.datadir_path / "current.json")
++        self.start_node(0, extra_args=["-feeoraclefile=current.json"])
++        node.setmocktime(self.now + 10)
++        self.assert_estimates({6: (6, 12500)})
++
++
++if __name__ == '__main__':
++    FeeOracleTest(__file__).main()
+diff --git a/test/functional/test_runner.py b/test/functional/test_runner.py
+index 629d162..ce846e0 100755
+--- a/test/functional/test_runner.py
++++ b/test/functional/test_runner.py
+@@ -94,6 +94,7 @@ BASE_SCRIPTS = [
+     # Longest test should go first, to favor running tests in parallel
+     # vv Tests less than 5m vv
+     'feature_fee_estimation.py',
++    'feature_fee_oracle.py',
+     'feature_taproot.py',
+     'feature_reduced_data_temporary_deployment.py',
+     'feature_bip9_max_activation_height.py',

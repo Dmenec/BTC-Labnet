@@ -27,6 +27,19 @@ The node is Bitcoin Core **v30.0** with two source files patched at build time: 
 
 [services/knots/](services/knots/) applies the same patches to Bitcoin Knots (`v29.4.knots20260508`, and `v29.2.knots20251110` before it), except for the IBD change (Knots does not serve block templates).
 
+## Fee oracle patch
+
+The Labnet's mempool is almost empty, so the nodes' fee estimator has no data. `fee_oracle.patch` (in the patch folders of Core 30.0 and Knots 29.2 and 29.4) adds two options, off unless set:
+
+- `-feeoraclefile=<file>`: a JSON snapshot of mainnet fee data, rewritten about once a minute by the fee oracle (`{"schema": 1, "t": <unix seconds>, "estimates": {"<target>": <sat/vB>, ...}, ...}`). Relative paths are taken from the data directory.
+- `-feeoraclemaxage=<seconds>` (default 600): the snapshot is used while its `t` is at most this old.
+
+While the snapshot is fresh, `estimatesmartfee` answers from `estimates`: for a requested target N, the estimate of the smallest target in the file that is at least N (the largest one if N is above all), converted to sat/kvB and rounded, then raised to the lowest rate the version's own estimator can return (`MIN_BUCKET_FEERATE`, 1 sat/vB in these versions; mainnet's newer Core estimates lower), with that target as `blocks`. The estimate mode does not change the answer. The node's wallets call the same estimator, so they pick their fee rate from it with their own logic (target, `-mintxfee`, minimum relay and mempool fee rates, fallback fee, discard rate). When the file is missing, stale, unreadable or has no estimates, the node behaves as unpatched; each change of state is logged once (`Fee oracle: ...` in `debug.log`).
+
+The code is in a new file, `src/policy/fee_oracle.cpp`, called from `CBlockPolicyEstimator::estimateSmartFee()`. The patch includes a functional test, `test/functional/feature_fee_oracle.py`, which passes on all three versions. Core 32.0 gets its patch once it is released.
+
+To use it, mount the oracle's output **directory** into the container read-only and point the option at the file in it, for example `-v /srv/fee_oracle:/oracle:ro` and `-feeoraclefile=/oracle/current.json`. Do not mount the file itself: the oracle replaces it by renaming a new file over it, and a container with the old file mounted keeps seeing the old one. The file has to be readable by the `bitcoin` user that runs the node (UID 101 unless `UID` is set). Freshness compares `t` with the node's clock, which is the host's.
+
 ## Running a node
 
 Requirements: Docker 20.10 or later.
