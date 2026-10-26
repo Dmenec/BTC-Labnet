@@ -8,6 +8,8 @@ FROM ${BASE_IMAGE} AS builder
 ARG UID=101
 ARG GID=101
 ARG BITCOIN_VERSION=30.0
+# Parallel build jobs (default: every core); lower it on a busy machine
+ARG BUILD_JOBS
 
 RUN groupadd --gid ${GID} bitcoin \
  && useradd --create-home --no-log-init -u ${UID} -g ${GID} bitcoin
@@ -41,7 +43,7 @@ RUN cmake -S . -B build -G Ninja \
       -DBUILD_GUI=OFF \
       -DENABLE_ZMQ=ON \
       -DENABLE_IPC=OFF \
-  && cmake --build build -- -j"$(nproc --all)" \
+  && cmake --build build -- -j"${BUILD_JOBS:-$(nproc --all)}" \
   && cmake --install build
 
 # Runtime image

@@ -6,6 +6,8 @@ FROM ubuntu:22.04 AS builder
 ARG UID=101
 ARG GID=101
 ARG BITCOIN_VERSION="29.4.knots20260508"
+# Parallel build jobs (default: every core); lower it on a busy machine
+ARG BUILD_JOBS
 
 RUN groupadd --gid ${GID} bitcoin \
  && useradd --create-home --no-log-init -u ${UID} -g ${GID} bitcoin
@@ -44,7 +46,7 @@ RUN cmake -S . -B build -G Ninja \
       -DRDTS_CONSENT=UNSUPPORTED_UNSAFE_NO_ENFORCEMENT \
       -DENABLE_ZMQ=ON \
       -DENABLE_IPC=OFF \
-  && cmake --build build -- -j"$(nproc --all)" \
+  && cmake --build build -- -j"${BUILD_JOBS:-$(nproc --all)}" \
   && cmake --install build
 
 # Runtime image
